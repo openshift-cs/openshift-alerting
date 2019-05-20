@@ -1,12 +1,13 @@
 import collections
+from json import loads
 from os import environ
 from logging import getLogger
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 
 from kubernetes import config, client
 from openshift.dynamic import DynamicClient
-from openshift.dynamic.client import ResourceList
-from openshift.dynamic.exceptions import ForbiddenError
+from openshift.dynamic.client import ResourceList, ResourceField
+from openshift.dynamic.exceptions import ForbiddenError, ApiException
 
 
 def deep_update(source, overrides):
@@ -40,27 +41,15 @@ class OpenShift:
 
     def list_projects(self) -> Optional[ResourceList]:
         project_list = self.client.resources.get(kind='ProjectList', api_version='project.openshift.io/v1')
-        try:
-            all_projects = project_list.get()
-        except ForbiddenError as e:
-            # Ignore clusters that don't have any projects
-            self.log.debug(e)
-            self.log.info(f'403 Forbidden: LIST Projects')
-            return None
+        all_projects = self._make_call(project_list, 'get')
         return all_projects
 
     def list_routes(self, namespace: str = None) -> Optional[ResourceList]:
         route_list = self.client.resources.get(kind='RouteList', api_version='route.openshift.io/v1')
-        try:
-            routes_for_namespace = route_list.get(namespace=namespace)
-        except ForbiddenError as e:
-            # Ignore namespaces that are not accessible
-            self.log.debug(e)
-            self.log.info(f'403 Forbidden: LIST Routes {namespace}')
-            return None
+        routes_for_namespace = self._make_call(route_list, 'get', namespace=namespace)
         return routes_for_namespace
 
-    def update_route(self, object_name: str, namespace: str, definition: Dict):
+    def update_route(self, object_name: str, namespace: str, definition: Dict) -> Optional[ResourceField]:
         routes = self.client.resources.get(kind='Route', api_version='route.openshift.io/v1')
         body = {
             'kind': 'Route',
@@ -68,10 +57,25 @@ class OpenShift:
             'metadata': {'name': object_name}
         }
         deep_update(body, definition)
+        updated_route = self._make_call(routes, 'patch', body=body, namespace=namespace)
+        return updated_route
+
+    def _make_call(self, resource: Union[ResourceList, ResourceField], method: str, *args, **kwargs) -> Optional[Union[ResourceList, ResourceField]]:
         try:
-            updated_route = routes.patch(body=body, namespace=namespace)
+            result = getattr(resource, method)(*args, **kwargs)
         except ForbiddenError as e:
             self.log.debug(e)
-            self.log.info(f'403 Forbidden: PATCH {object_name}:{namespace}')
-            return None
-        return updated_route
+            msg = f'403 Forbidden: {method.upper()} {getattr(resource, "kind", "")}'
+            if 'object_name' in kwargs:
+                msg += f' - {kwargs["object_name"]}'
+            if 'namespace' in kwargs:
+                msg += f' - {kwargs["namespace"]}'
+            self.log.info(msg)
+        except ApiException as e:
+            self.log.debug(e)
+            self.log.warning(f'Unable to {method.upper()} {getattr(resource, "kind", "")}: {loads(e.body)["message"]}')
+        except AttributeError as e:
+            self.log.debug(e)
+            self.log.error(f'Unable to {method.upper()} {getattr(resource, "kind", "")}: {e}')
+        else:
+            return result
