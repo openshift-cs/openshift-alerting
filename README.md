@@ -49,18 +49,19 @@ The configuration of this application is controlled by environment variables.
 These can either be set initially with `oc new-app -e`, or adjusted later
 with `oc set env`.
 
-- LOGGING_LEVEL (default: INFO)
-- SMTP_HOST (default: localhost)
-- SMTP_PORT (default: 25)
-- SMTP_USE_TLS (default: true)
-- SMTP_USER
-- SMTP_PASS
-- CLUSTER_CONTEXTS (default: current)
-- INTERNAL_CLUSTER (default: false)
-- REMEDIATION (default: false)
-- KUBE_CONFIG_FILE (Required with INTERNAL_CLUSTER=false)
-- DEBUG (default: false)
+- SMTP Configuration options:
+    - SMTP_HOST (default: localhost)
+    - SMTP_PORT (default: 25)
+    - SMTP_USE_TLS (default: true)
+    - SMTP_USER
+    - SMTP_PASS
+- INTERNAL_CLUSTER (default: false) - Use the pod's assigned ServiceAccount credentials
+- KUBE_CONFIG_FILE (Required if INTERNAL_CLUSTER=false)
+- CLUSTER_CONTEXTS (default: current) - A comma separated list of contexts from the KUBE_CONFIG_FILE, ignored if `INTERNAL_CLUSTER`=true
+- REMEDIATION (default: false) - Whether or not to perform automatic remediation
 - SCHEDULE_DELAY (default: 30) - Seconds to sleep before checking for new jobs
+- SKIP_EMAIL_FOR_SUCCESSFUL_REMEDIATION (default: false) - Prevents alert emails if *all* alerts were successfully remediated
+- LOGGING_LEVEL (default: INFO) - The level of logging output to produce
 
 # Examples
 
@@ -112,3 +113,58 @@ $ oc new-app https://github.com/openshift-cs/openshift-alerting \
     -e SMTP_PORT=587
 $ oc set volume dc/openshift-alerting --add --mount-path=/kube --secret-name=kubeconfig
 ```
+
+# Contributing
+
+## Adding alert plugins
+
+1. Create a python module within the `alerts/` directory
+
+2. Create a class within the new module that _must_ inherit the `BaseAlert` abstract class
+
+    ```python
+    from . import BaseAlert
+
+    class MyNewAlert(BaseAlert):
+        pass
+    ```
+
+3. Implement the required methods, `process_alerts` and `process_remediations`
+
+    ```python
+    def process_alerts(self):
+        pass
+        
+    def process_remediations(self):
+        pass
+    ```
+
+    - `process_alerts` should rely on the `self.failed_alerts` list by appending a dictionary for every object that fails the desired test
+    
+        ```python
+        # Dictionary definition that should be added to `self.failed_alerts`
+        self.failed_alerts.append({
+            'object': ResourceField,  # Object to perform remediation on
+            'message': 'Alert message'  # Message that is sent within the alert email
+        })
+        
+        # It is also generally a good idea to log out the alert message to stdout
+        self.log.info('Alert message')
+        ```
+        
+    - `process_remediations` should iterate over `self.failed_alerts` to attempt remediations. If the remediation succeeds or fails, you should update the dictionary as follows
+    
+        ```python
+        for alert in self.failed_alerts:
+            if remediation_succeeds:
+                alert['remediated'] = True
+            else:
+                alert['remediated'] = False
+        ```
+        
+    - If it is not possible or desired to remediate automatically, then leave the method definition empty
+    
+        ```python
+        def process_remediations(self):
+            pass
+        ```
