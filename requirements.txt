@@ -1,0 +1,4 @@
+openshift~=0.8.0
+kubernetes~=9.0.0
+emails~=0.5.15
+schedule~=0.6.0
